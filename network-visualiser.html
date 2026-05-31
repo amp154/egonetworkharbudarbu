@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Harbu Darbu – Co-charting Network</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+  #canvas { width: 100vw; height: 100vh; display: block; }
+  .link { stroke-opacity: 0.35; fill: none; }
+  .node circle { cursor: pointer; stroke-width: 1.5; }
+  .node text { pointer-events: none; }
+
+  #tooltip {
+    position: absolute; background: rgba(15,23,42,0.95); border: 1px solid #334155;
+    border-radius: 8px; padding: 10px 14px; font-size: 13px; max-width: 260px;
+    pointer-events: none; display: none; z-index: 100; line-height: 1.6;
+  }
+  #tooltip .t-title { font-weight: 700; font-size: 14px; color: #f8fafc; margin-bottom: 4px; }
+  #tooltip .t-row { color: #94a3b8; }
+  #tooltip .t-row span { color: #e2e8f0; }
+  #tooltip .t-weight { color: #f59e0b; font-weight: 600; }
+
+  #legend {
+    position: absolute; top: 16px; right: 16px; background: rgba(15,23,42,0.9);
+    border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; font-size: 12px;
+    max-height: calc(100vh - 32px); overflow-y: auto; min-width: 160px;
+  }
+  #legend h3 { color: #f8fafc; font-size: 13px; margin-bottom: 10px; font-weight: 600; }
+  .leg-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; cursor: pointer; opacity: 1; transition: opacity 0.2s; }
+  .leg-row.hidden { opacity: 0.3; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .leg-label { color: #cbd5e1; }
+
+  #info {
+    position: absolute; bottom: 16px; left: 16px; background: rgba(15,23,42,0.9);
+    border: 1px solid #334155; border-radius: 8px; padding: 10px 16px; font-size: 12px;
+    color: #64748b; max-width: 420px;
+  }
+  #info strong { color: #f59e0b; }
+
+  #controls {
+    position: absolute; top: 16px; left: 16px; display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .btn {
+    background: rgba(30,41,59,0.9); border: 1px solid #475569; color: #cbd5e1;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    transition: all 0.2s;
+  }
+  .btn:hover { background: #1e293b; border-color: #94a3b8; color: #f1f5f9; }
+  .btn.active { background: #1e40af; border-color: #3b82f6; color: #bfdbfe; }
+
+  #search-wrap { position: absolute; top: 52px; left: 16px; }
+  #search {
+    background: rgba(30,41,59,0.9); border: 1px solid #475569; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 200px; outline: none;
+  }
+  #search:focus { border-color: #3b82f6; }
+  #search-results {
+    background: rgba(15,23,42,0.98); border: 1px solid #334155; border-radius: 6px;
+    margin-top: 4px; max-height: 200px; overflow-y: auto; display: none;
+  }
+  .s-row { padding: 6px 10px; cursor: pointer; font-size: 12px; color: #cbd5e1; }
+  .s-row:hover { background: #1e293b; color: #f1f5f9; }
+</style>
+</head>
+<body>
+<svg id="canvas"></svg>
+<div id="tooltip"></div>
+
+<div id="controls">
+  <button class="btn active" id="btn-all">All nodes</button>
+  <button class="btn" id="btn-ego">Harbu Darbu neighbors only</button>
+  <button class="btn" id="btn-reset">Reset view</button>
+</div>
+
+<div id="search-wrap">
+  <input id="search" type="text" placeholder="Search song…" autocomplete="off">
+  <div id="search-results"></div>
+</div>
+
+<div id="legend"><h3>Genre</h3></div>
+
+<div id="info">
+  <strong>חרבו דרבו</strong> (Harbu Darbu) · ness &amp; stilla · Hip-Hop/Rap<br>
+  Shazam Israel co-charting network · 422 songs · edges = co-charting frequency<br>
+  Node size = days charting · Hover for details · Click legend to filter genres
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const GENRE_COLORS = {
+  'Rock':'#818cf8','Pop':'#34d399','Alternative/Folk':'#60a5fa',
+  'Hip-Hop/Rap':'#f472b6','Electronic/Dance':'#a78bfa','R&B/Soul':'#fb923c',
+  'World/Arabic':'#facc15','Israeli':'#38bdf8','Latin':'#4ade80',
+  'Soundtrack':'#f87171','K-Pop':'#e879f9','Other':'#94a3b8'
+};
+
+const HD_ID = 682750294;
+
+// All 422 nodes: [id, label, artist, genre_group, avg_rank, days_charting, cities_reached]
+const NODES_RAW = [
+[215540,"hotel california","eagles","Rock",38.3,3,3],
+[225178,"you do something to me","paul weller","Alternative/Folk",44,3,1],
+[228965,"ode to my family","the cranberries","Rock",37.9,26,5],
+[232141,"shape of my heart","sting","Pop",44.9,8,5],
+[238534,"iris","the goo goo dolls","Pop",41.8,10,3],
+[240495,"the sound of silence","simon & garfunkel","Alternative/Folk",40.9,12,3],
+[272398,"look on down from the bridge","mazzy star","Rock",29.7,8,5],
+[294633,"you've got a friend","james taylor","Rock",40.1,11,5],
+[459379,"africa","toto","Rock",36.9,6,5],
+[2955012,"anyone who knows what love is","irma thomas","Pop",42.3,3,1],
+[5164711,"family affair","mary j. blige","R&B/Soul",48.1,5,2],
+[5165362,"brothers in arms","dire straits","Pop",41.6,9,5],
+[5168862,"sonnet","the verve","Rock",32.2,13,3],
+[5215989,"love is a long road","tom petty","Rock",32.4,6,5],
+[5443315,"this woman's work","kate bush","Soundtrack",38.5,6,1],
+[5653525,"still loving you","scorpions","Rock",42.4,9,2],
+[5878414,"too close","next","R&B/Soul",30.4,13,5],
+[5912615,"fast car","tracy chapman","Alternative/Folk",41.3,1,3],
+[10002705,"i'll be missing you","puff daddy feat. faith evans","Hip-Hop/Rap",42.7,6,3],
+[10020121,"what you won't do for love","bobby caldwell","R&B/Soul",30.4,6,4],
+[10092263,"eye in the sky","the alan parsons project","Rock",36.9,21,5],
+[10229984,"סליחות","yehudit ravitz","Rock",33,3,1],
+[10314013,"nothing else matters","metallica","Rock",38.5,4,1],
+[10314014,"the unforgiven","metallica","Rock",41.9,4,2],
+[10485293,"the air that i breathe","the hollies","Rock",32.2,5,5],
+[10593988,"high","lighthouse family","Rock",38.8,3,2],
+[11127316,"dream on","aerosmith","Rock",40.9,22,5],
+[11177141,"lose yourself","eminem","Hip-Hop/Rap",40,7,4],
+[20004342,"stop crying your heart out","oasis","Rock",47.5,3,2],
+[20029574,"murder on the dancefloor","sophie ellis-bextor","Electronic/Dance",24.9,47,5],
+[20056730,"gangsta's paradise","coolio feat. l.v.","Hip-Hop/Rap",48.2,2,3],
+[20116104,"sabry 'aalil","sherine","World/Arabic",12.6,103,5],
+[40008671,"my immortal","evanescence","Rock",36.5,7,3],
+[40026111,"yeah!","usher feat. lil' jon & ludacris","R&B/Soul",23.3,8,5],
+[40087819,"careless whisper","george michael","Pop",36.7,62,5],
+[40111843,"somewhere only we know","keane","Rock",42.9,17,2],
+[40142872,"not going anywhere","keren ann","Pop",37.4,5,1],
+[40590926,"mockingbird","eminem","Hip-Hop/Rap",45.3,2,2],
+[40617189,"bana sor","ferdi tayfur","World/Arabic",28.8,6,1],
+[40628368,"unwritten","natasha bedingfield","Pop",3.7,45,5],
+[40638280,"feeling good","michael buble","Pop",32.3,12,5],
+[40649745,"1 thing","amerie","R&B/Soul",30,21,5],
+[42545851,"lonely day","system of a down","Rock",36.2,5,4],
+[44328874,"thank you","dido","Pop",43.7,3,1],
+[44388860,"again","roger sanchez","Electronic/Dance",28.1,42,5],
+[44450879,"too little, too late","jojo","R&B/Soul",40.8,5,2],
+[44493320,"smack that (feat. eminem)","akon","R&B/Soul",38.1,4,3],
+[44558453,"cupid's chokehold","gym class heroes","Rock",44,18,5],
+[44561513,"unwritten (johnny vicious club mix)","natasha bedingfield","Pop",42.5,4,2],
+[45180944,"eh eh","sherine","World/Arabic",26.8,18,5],
+[45389104,"мой мармеладный","katya lel","Pop",19.1,55,5],
+[45530335,"soon we'll be found","sia","Pop",33.9,39,5],
+[45923721,"lucky","jason mraz & colbie caillat","Pop",46.1,7,1],
+[46076121,"viva la vida","coldplay","Alternative/Folk",44.9,7,5],
+[47677477,"te sigo soñando","depedro","Alternative/Folk",35.2,21,5],
+[48312027,"father and son","cat stevens","Pop",37,2,4],
+[48796740,"stereo love","edward maya & vika jigulina","Electronic/Dance",41.7,16,3],
+[49493009,"home","edward sharpe & the magnetic zeros","Alternative/Folk",43.5,7,3],
+[49978537,"we are the people","empire of the sun","Alternative/Folk",30.5,80,5],
+[51159858,"this is the life","amy macdonald","Pop",29.6,16,5],
+[52151180,"run away (feat. olia tira)","sunstroke","Pop",27.9,23,5],
+[52384642,"love the way you lie","eminem","Hip-Hop/Rap",38.1,19,5],
+[52689669,"runaway","kanye west feat. pusha t","Hip-Hop/Rap",49.7,2,2],
+[52743839,"hero","family of the year","Alternative/Folk",46.1,7,5],
+[52930860,"danza kuduro","lucenzo feat. don omar","Pop",36.6,18,5],
+[53072392,"set fire to the rain","adele","Pop",36.8,17,5],
+[53271726,"arms","christina perri","Pop",45.3,5,3],
+[53561583,"psycho killer","talking heads","Alternative/Folk",29.2,14,5],
+[53962771,"a thousand years","christina perri","Soundtrack",45,3,1],
+[54004343,"practice","drake","Hip-Hop/Rap",31.6,13,5],
+[54362551,"feel","robbie williams","Pop",44.3,5,2],
+[55977094,"bigharar","moein","World/Arabic",36.1,7,4],
+[56145877,"millim yaffot me'eleh","the idan raichel project","World/Arabic",39.4,8,4],
+[57562633,"taro","alt-j","Alternative/Folk",46.2,4,1],
+[58235903,"disfruto","carla morrison","Pop",34.2,6,3],
+[59488812,"is it alright","maya isacowitz","Pop",42.4,5,2],
+[61079729,"living on video","pakito","Electronic/Dance",39.8,4,3],
+[61999227,"maria","justin bieber","Pop",31.1,30,5],
+[63998063,"אלעד ירד אל הירדן","lehakat pikud darom","Alternative/Folk",34.3,3,1],
+[63998278,"החולמים אחר השמש","haparvarim","World/Arabic",35.7,3,1],
+[64712815,"swimming pools (drank)","kendrick lamar","Hip-Hop/Rap",28.8,19,5],
+[66002073,"hozrim habayta","shlomo artzi & arik einstein","Rock",48.2,3,3],
+[66338287,"קחי לך זמן","yetziat cherum","Rock",41.3,6,4],
+[66387760,"sultans of swing","dire straits","Rock",44.1,16,4],
+[68006578,"last christmas","wham!","Pop",37.8,21,4],
+[70679146,"another love","tom odell","Alternative/Folk",33.1,92,5],
+[71518388,"fade into you","mazzy star","Pop",42.1,18,5],
+[78665816,"love me","lil wayne feat. drake & future","Hip-Hop/Rap",36.4,8,3],
+[85966369,"mirrors","justin timberlake","Pop",45.8,10,3],
+[86465795,"dancin (krono remix)","aaron smith feat. luvli","Electronic/Dance",39.8,5,1],
+[90591438,"בכרם תימן","ofra haza","Israeli",35,3,1],
+[90634834,"formidable","stromae","Pop",21.2,80,5],
+[90942201,"broken (single version)","jake bugg","Alternative/Folk",33.8,4,4],
+[93538159,"white flag","dido","Pop",41.7,3,1],
+[101211544,"spectrum (say my name)","florence + the machine","Electronic/Dance",35.2,7,4],
+[103443495,"made in romania","ionut cercel","World/Arabic",5.1,33,5],
+[103621403,"mind over matter","young the giant","Alternative/Folk",46.9,10,3],
+[111169056,"derniere danse","indila","Pop",38.5,7,5],
+[146039522,"אצלנו בגן","shaylee atary","Pop",45,4,1],
+[149961136,"לשרוק בחושך","the backyard","Pop",40.3,7,1],
+[162553850,"rise up","andra day","R&B/Soul",38.8,7,4],
+[200341793,"kmo kol yom","idan rafael haviv","Rock",43.7,7,2],
+[200513031,"חורשת האקליפטוס","cilla dagan & ofra gluska","Alternative/Folk",17.3,3,1],
+[200527842,"כאב של לוחמים","idan amedi","Israeli",43.6,4,2],
+[201435159,"שלג על עירי","ruhama raz","Israeli",18.7,3,1],
+[201856030,"יונה עם עלה של זית","lehakat pikud darom","Alternative/Folk",24.3,3,1],
+[210424193,"שיכור ולא מיין","yossi banai","Pop",29,3,1],
+[224806500,"king","years & years","Electronic/Dance",17.3,20,5],
+[225760915,"כל הדברים היפים באמת","daniela spector","Pop",30,6,5],
+[235243031,"see you again","wiz khalifa feat. charlie puth","Hip-Hop/Rap",40.2,4,1],
+[242000696,"you don't own me","grace feat. g-eazy","Pop",21.6,26,5],
+[262737553,"waiting for love","avicii","Electronic/Dance",37.3,6,5],
+[264127139,"עד שתחזור","yuval dayan","Israeli",41.7,3,1],
+[284742092,"בימים שיעברו עלינו","hadas kleinman & aviv bahar","Rock",40.9,7,2],
+[287486335,"מנגנת את חיי","eyal golan","World/Arabic",10.5,8,5],
+[291373009,"od lo tamu kol pla'aich","lehakat pikud hatzafon","Pop",40.2,4,1],
+[294413869,"wainek min zaman","yazan haifawi","Alternative/Folk",38.3,7,2],
+[298202984,"lost on you","lp","Alternative/Folk",29,15,5],
+[298370663,"million years ago","adele","Pop",33.1,7,5],
+[307795563,"never be like you","flume feat. kai","Electronic/Dance",38.3,18,5],
+[308021058,"unstoppable","sia","Pop",39.9,4,4],
+[309638034,"cold little heart","michael kiwanuka","R&B/Soul",32.8,46,5],
+[310300106,"love on the brain","rihanna","Pop",40,1,3],
+[312452486,"i follow rivers","roni alter","Pop",20.2,59,5],
+[313490394,"חלק מהזמן","idan amedi","Israeli",37.8,7,5],
+[313861577,"waiting for a better day","arik einstein & miki gavrielov","Rock",38.8,5,1],
+[314491967,"hurricane","marina maximilian","Pop",41.1,8,2],
+[317291164,"the sound of silence","disturbed","Rock",34.6,8,5],
+[320720176,"just a dream (coke studio fusion mix)","nelly","World/Arabic",16.7,18,5],
+[324950052,"sodfa ltagena","roni kassar","World/Arabic",40.6,7,1],
+[330001762,"ברית עולם","matti caspi","Pop",39.3,3,1],
+[330689580,"לראות את האור","efrat gosh","Rock",46.2,5,1],
+[330946309,"בסיבוב השני","nasrin kadri","Pop",40.2,5,1],
+[331913879,"maspik ben adam","monica sex","Rock",38.1,11,4],
+[333694562,"שיר לאמא","alon eder","Pop",23.8,14,5],
+[337662833,"ocean","elsa & emilie","Pop",32.6,7,5],
+[342514741,"perfect","ed sheeran","Pop",40.7,15,3],
+[344094914,"i wouldn't mind","he is we","Pop",27,38,5],
+[344619652,"מצילה אותי","the avihu pinhasov rhythm club","Rock",46,3,2],
+[347294701,"sign of the times","harry styles","Pop",44.4,14,5],
+[360718083,"בדיוק כמו שאני","ravid plotnik","Hip-Hop/Rap",48.2,3,2],
+[366676963,"מרדף","chava alberstein","Alternative/Folk",23.7,3,1],
+[379995993,"fireworks","first aid kit","Alternative/Folk",39.5,14,4],
+[380156079,"snowman","sia","Other",43.5,5,2],
+[382434403,"as a stone (feat. sivan talmor)","full trunk","Rock",47.2,4,2],
+[384617270,"לשוב הביתה","ishay ribo","Pop",27.9,7,4],
+[414985750,"הכל יהיה","blue pill","Rock",31.6,6,5],
+[422160063,"shen yeng anthem","shenseea","Other",30.5,28,5],
+[427101360,"shallow","lady gaga & bradley cooper","Soundtrack",43.5,3,4],
+[428215731,"nothing compares 2 u","toni cornell & chris cornell","Rock",41.9,7,4],
+[430774708,"rescue","lauren daigle","Alternative/Folk",34.4,13,5],
+[433360089,"2009","mac miller","Hip-Hop/Rap",42.6,6,3],
+[440807213,"always remember us this way","lady gaga","Soundtrack",32,7,1],
+[462218193,"חצי מדינה","eden ben zaken","Israeli",43,1,3],
+[462276207,"colors","black pumas","R&B/Soul",46,3,1],
+[462648965,"schhh (feat. irina rimes)","mahmut orhan","Electronic/Dance",36.4,7,3],
+[498246290,"בין-קודש-לחול","amir dadon & shuli rand","Pop",27.3,7,5],
+[504494806,"the box","roddy ricch","Hip-Hop/Rap",38.3,13,4],
+[505112508,"heather","conan gray","Pop",35.1,7,5],
+[506362559,"godzilla","eminem feat. juice wrld","Hip-Hop/Rap",34.1,8,5],
+[506930583,"bahr el demoo","ahmed kamel","World/Arabic",33.9,7,1],
+[512079348,"i miss you, i'm sorry","gracie abrams","Pop",43.2,6,2],
+[512558203,"ניפגש בחלומות","elai botner","Pop",20.5,2,5],
+[516489317,"continue","invasion","Electronic/Dance",14.1,21,5],
+[531332967,"שלמים","idan rafael haviv","Pop",46.2,3,2],
+[531676660,"לחזור הביתה","hatikva 6","Pop",31.9,31,5],
+[533563791,"mami loca","foli & mofi el garrote","Latin",33,63,5],
+[534094098,"שבורי לב","hanan ben ari","Pop",39.6,13,4],
+[534468419,"cold","chris stapleton","Alternative/Folk",35.3,6,3],
+[535420454,"ביחד","marina maximilian & guy mentesh","Pop",43.5,7,4],
+[537535696,"יש לך אותך","miri mesika & mika moshe","Pop",20.5,91,5],
+[540646700,"אל תפחד","rotem bar or & daniela spector","Pop",42.9,3,5],
+[542792334,"dakiti","bad bunny & jhay cortez","Latin",47.2,4,2],
+[544842905,"pyala","aigel","Alternative/Folk",23.8,41,5],
+[564889079,"הביתה לחזור","odeya & tzaan barzel muzika","Pop",41,17,5],
+[565367971,"שושנים עצובות","eden hason & jasmin moallem","Pop",39.2,10,5],
+[565950207,"ani kuni","polo & pan","Electronic/Dance",31.9,7,5],
+[567570330,"זה מתחיל בצעד","adi avrahami","Pop",32.8,13,5],
+[569970796,"sugar (remix)","butrint imeri","Pop",41.5,36,4],
+[572837088,"la isla bonita","aya zahavi-feiglin","Pop",38.4,7,3],
+[579155409,"masaytra","lamis kan","World/Arabic",36.2,26,5],
+[579371690,"casablanca (feat. morad)","baby gang & bobo","Hip-Hop/Rap",41.2,7,3],
+[581828191,"until i found you","stephen sanchez","Alternative/Folk",33,59,5],
+[581891303,"osama","zakes bantwini & kasango","Electronic/Dance",12.1,14,5],
+[583543958,"shalva b'armonoteha","ravid plotnik","Hip-Hop/Rap",28.7,43,5],
+[583936148,"fagrak","el waad team for islamic art","World/Arabic",26.6,7,1],
+[585741070,"confession","babyboy av","World/Arabic",34.2,6,1],
+[589528127,"overseas","d-block europe feat. central cee","Hip-Hop/Rap",33,13,5],
+[594265720,"the rev3nge","joey bada$$","Hip-Hop/Rap",25.1,16,5],
+[594385994,"soaked","shy smith","Pop",29.2,9,5],
+[594552236,"יחפים","jasmin moallem","Pop",43.1,10,5],
+[599925144,"surround sound","jid feat. 21 savage & baby tate","Hip-Hop/Rap",16.5,85,5],
+[603471061,"love don't cost a dime (re-up)","magixx & ayra starr","R&B/Soul",37.3,19,5],
+[603839352,"pa'am at layla","shay hamber","Pop",10,11,5],
+[604723885,"tmunot shelha","osher cohen & ha-hallanit","Pop",46.3,3,1],
+[604808416,"yesh beha hakol","akiva","Pop",36,48,5],
+[607917333,"snap","rosa linn","Pop",37.1,19,5],
+[609576749,"mazal (acoustic)","tamar yahalomy & yonatan kalimi","Pop",37.8,7,5],
+[610316556,"sigue","beny jr, morad & k y b","Latin",33.6,27,5],
+[614060912,"mahar ani babait","omri sabach","Pop",37,7,4],
+[614341353,"titi me pregunto","bad bunny","Latin",37.3,13,5],
+[615517982,"ain lecha ma lidaog","ha-lehakot ha-tzva'iyot & dj malka","Pop",42.8,5,2],
+[616505471,"ghazali (feat. bryan mg)","dystinct","Hip-Hop/Rap",27.8,8,5],
+[619492066,"bleeding","talkintoys","Pop",37.3,7,1],
+[619633276,"remote al-television","ahmed al-dogri","World/Arabic",45.3,2,2],
+[621732665,"stick season","noah kahan","Alternative/Folk",33.2,19,5],
+[621863643,"end of beginning","djo","Alternative/Folk",21,4,4],
+[622275048,"yerushalayim","itay david","Pop",40.6,7,1],
+[627269425,"shkarenit (cover)","noy gabay","Pop",44.5,4,1],
+[628313618,"y u f i","atar mayner, asker & maayan linik","Hip-Hop/Rap",39.7,3,1],
+[629034396,"amathole","joezi & lizwi","Electronic/Dance",31.6,10,5],
+[630882868,"hoist the colours","the wellermen","Alternative/Folk",49,3,2],
+[631531842,"hayom","noam bettan","Pop",36.9,6,2],
+[633367735,"si no estas","inigo quintero","Pop",14.9,81,5],
+[633815114,"escapism.","raye & 070 shake","Pop",31.8,10,5],
+[635057604,"cok yazik","cagan sengul","Rock",39.2,41,1],
+[635972154,"vi smalter","dina ogon","R&B/Soul",39.1,8,1],
+[636179679,"praise you","grace cummings","Alternative/Folk",37.9,5,2],
+[642985741,"til you're home","rita wilson & sebastian yatra","Soundtrack",46.8,3,2],
+[645935643,"mas o loli","hvbeen","Electronic/Dance",31.2,4,5],
+[646260487,"til you're home","david hodges","Soundtrack",31.9,8,3],
+[648859694,"flowers","miley cyrus","Pop",22.4,19,5],
+[649911199,"oubrit al-a'ila","ali alhaider","Pop",33.8,10,5],
+[651269055,"pachad elohim","kfir tsafrir","Hip-Hop/Rap",8.9,106,5],
+[651322443,"mashehu amiti b'eynayim","shasson ifrem shaoulov","Alternative/Folk",25.4,98,5],
+[652452878,"im nin'alu","asher swissa, mor avrahami & narkis","Electronic/Dance",10.4,9,5],
+[653088510,"blomi","susanne sundfoor","Alternative/Folk",44.2,12,4],
+[653591361,"private landing (feat. justin bieber & future)","don toliver","Hip-Hop/Rap",46.8,4,1],
+[653730080,"rodeo (remix)","lah pat & flo milli","Hip-Hop/Rap",39.1,6,3],
+[654386151,"sahara + levadi","omer adam","Pop",28.3,8,3],
+[659236090,"daylight","david kushner","Pop",42.6,12,5],
+[660995845,"7 seconds","joezi","Electronic/Dance",43,8,2],
+[662695739,"tslalem (feat. inbal bibi)","ohav","Hip-Hop/Rap",39.3,2,2],
+[663870182,"aharei ha-netzach (live)","peer tasi","Pop",32.2,33,5],
+[664511181,"this is the life (sped up)","amy macdonald & speed radio","Pop",49.3,3,1],
+[665020863,"ma la'asot im ha-ze'ev","alma gov","Pop",46.6,5,1],
+[665258594,"atalef iver","hanan ben ari","Pop",37.6,23,5],
+[665553660,"tareq el andal","hamada al-lethy","World/Arabic",22.5,6,1],
+[666513521,"la","dystinct","Hip-Hop/Rap",22.1,66,5],
+[666629383,"yihye tov","jasmin moallem","Pop",28.6,51,5],
+[666647256,"sigalyot","omer adam & david broza","Pop",41.9,8,3],
+[666710033,"the rapture pt.iii","&me & black coffee","Other",31.9,40,5],
+[666933077,"le'ehov otcha kol yom","doli & penn & eden hason","Pop",45.5,10,3],
+[667016587,"becane - a colors show","yame","Hip-Hop/Rap",10.3,85,5],
+[667309885,"lekahim (analog)","tzukush","Hip-Hop/Rap",39,3,1],
+[667312288,"(it goes like) nanana (edit)","peggy gou","Electronic/Dance",38,19,5],
+[667426645,"what was i made for? [from barbie]","billie eilish","Alternative/Folk",39.5,23,5],
+[668023156,"popular (feat. playboi carti)","the weeknd & madonna","Soundtrack",34.8,66,5],
+[668084599,"ahava","osher cohen","Pop",32.8,89,5],
+[668086513,"sprinter","dave & central cee","Hip-Hop/Rap",47.7,6,2],
+[668232963,"hutz mi-kaduregel","hanan ben ari","Pop",45,4,1],
+[668440346,"soak city (do it)","310babii","Hip-Hop/Rap",30.3,22,4],
+[668720370,"becane","yame","Hip-Hop/Rap",44,8,5],
+[668834911,"lose control","teddy swims","Pop",21.6,36,5],
+[668966638,"heaven","bombay bicycle club & damon albarn","Rock",47,4,2],
+[669034433,"cleared - remix","lilithzplug","Alternative/Folk",33.7,21,5],
+[669055207,"af pa'am lo levad","inbal bibi","Pop",34.5,23,5],
+[669333017,"just a friend","gadee","Pop",48.8,3,2],
+[670152796,"one of the girls","the weeknd, jennie & lily rose depp","Soundtrack",40.9,38,5],
+[670453090,"vampire","olivia rodrigo","Pop",30.7,30,5],
+[670660854,"safari","omiki & terra","Electronic/Dance",34.3,6,1],
+[670722541,"got me started","troye sivan","Pop",35,13,3],
+[671120123,"casanova","soolking & gazo","R&B/Soul",35.7,8,3],
+[671288749,"tsaritsa","anna asti","Pop",42.8,5,3],
+[671876208,"basit numaralar","zerrin ozer","World/Arabic",24.6,16,2],
+[672088996,"my love mine all mine","mitski","Alternative/Folk",27.1,61,5],
+[672741689,"yazmeely","muhab","World/Arabic",41,4,1],
+[673104339,"water","tyla","Pop",24.3,102,5],
+[673317418,"angel","black pumas","R&B/Soul",41.2,23,4],
+[673484151,"my eyes","travis scott","Hip-Hop/Rap",39.7,24,5],
+[673557639,"paint the town red","doja cat","Hip-Hop/Rap",38.9,34,5],
+[673811918,"latset mi-dikaon","yigal ushery","Pop",9,85,5],
+[674705321,"hala b-hussain al-thani","khudor abas","World/Arabic",33.2,15,3],
+[674747102,"shalom ahuvati","eyal golan","Israeli",43.6,7,3],
+[674934145,"tacata","tiagz","Hip-Hop/Rap",32.4,10,5],
+[675031499,"greedy","tate mcrae","Pop",27.4,103,5],
+[675132421,"strangers","kenya grace","Electronic/Dance",32.7,78,5],
+[675387106,"montagem coral","dj holanda","Hip-Hop/Rap",42.4,10,3],
+[676143465,"black friday","tom odell","Pop",44,8,3],
+[676186486,"meet you at the graveyard","cleffy","Alternative/Folk",43.8,4,1],
+[676217862,"sweet sounds of heaven (edit)","the rolling stones & lady gaga","Rock",37.3,13,5],
+[676472713,"seya","sativamusic, morad & gims","Latin",32.7,53,5],
+[676547729,"agora hills","doja cat","Hip-Hop/Rap",36.5,49,5],
+[676684452,"yihye tov & mayim shkufim","omer adam & jasmin moallem","Pop",18.9,75,5],
+[676778971,"galbi la","abn salah","Pop",43.8,5,1],
+[677066570,"ha-kokhav ha-shaket","aviv guedj","Rock",45.6,11,3],
+[677446756,"remix dam'ak ya ayn","vee remix","Pop",34.6,6,3],
+[677817563,"38 v-hutz mi-kaduregel","hanan ben ari & peer tasi","Pop",43.9,8,4],
+[677829655,"aria","argy & omnya","Electronic/Dance",38.2,46,5],
+[677839063,"swimming pools (drank) [feat. tori amos]","trevor horn","Pop",46.2,6,3],
+[677978279,"made for me","muni long","R&B/Soul",34,11,4],
+[678039577,"atese dustum","mert demir","Pop",15.2,44,5],
+[678258566,"made in romania","pete riley","Electronic/Dance",38,4,4],
+[679163173,"zhurek","adam","Pop",40.2,13,4],
+[679241565,"standing next to you","jung kook","K-Pop",13.5,8,1],
+[679370733,"contigo (radio edit)","rebrn & danor","Electronic/Dance",34.5,7,4],
+[679415347,"tahazor","the idan raichel project & roni dalumi","Pop",18.8,78,5],
+[679415363,"ad shethazri elay","the idan raichel project","Pop",25.9,6,5],
+[679415369,"kol yom me-hadash","the idan raichel project & gidi gov","Pop",26.3,22,5],
+[679429056,"neshama sheli at","aviram amar","Israeli",31.6,25,5],
+[679706249,"i'm sorry (ft. lous and the yakuza)","arlo parks","Pop",44,4,3],
+[679828624,"boi nedaber","shasson ifrem shaoulov","World/Arabic",45.5,14,4],
+[679889316,"rich baby daddy","drake","Hip-Hop/Rap",41.5,29,5],
+[679889401,"idgaf (feat. yeat)","drake","Hip-Hop/Rap",49,3,1],
+[680003811,"jamalak ghayr","abdullah al farwan","World/Arabic",40.2,30,3],
+[680060604,"monaco","bad bunny","Latin",35,36,5],
+[680550395,"baltimore","stefi celma","Pop",41,7,5],
+[680643280,"mr. take ya b*tch","lil mabu & chriseanrock","Hip-Hop/Rap",33,17,5],
+[680681411,"live forever (from rick and morty)","rick and morty","Soundtrack",42,2,2],
+[680713998,"moledet","hanan ben ari","Pop",46.7,4,4],
+[680747583,"am yisrael chai","eyal golan","World/Arabic",23.8,60,5],
+[680820391,"someone said","watsebha","Hip-Hop/Rap",47.2,5,2],
+[680956473,"nitraeh be-gilgul ha-ba","shasson ifrem shaoulov","Israeli",42.8,4,2],
+[681172099,"vvv","mikeeysmind & sanikwave","Hip-Hop/Rap",43.8,4,1],
+[681181441,"horef 23","odeya & e-z","Pop",27,45,5],
+[681197198,"slowdown","yellowstraps","Electronic/Dance",46.4,5,1],
+[681349253,"now and then","the beatles","Rock",37.1,13,5],
+[681512852,"boi nedaber (feat. shlomo levy)","shiraz avraham","Pop",18.6,61,5],
+[681557383,"tirkod la-netsach","omer adam & infected mushroom","Electronic/Dance",38.7,14,5],
+[681706557,"sayed al-ushaaq","ghareeb al-makhlous","World/Arabic",22,19,5],
+[681832341,"kul mayji layl","hassuni al-haji","World/Arabic",13.1,13,5],
+[681941335,"shibolim","adar gold","Pop",32,18,5],
+[681957864,"can't catch me now (hunger games)","olivia rodrigo","Soundtrack",23.3,73,5],
+[681990115,"tirkdi (7.10.23)","osher cohen","Pop",18.5,84,5],
+[682107453,"one call","rich amiri","Hip-Hop/Rap",38.6,21,5],
+[682422829,"ha-balada la-mehakot","narkis","Pop",35.7,19,5],
+[682603992,"lovin on me","jack harlow","Hip-Hop/Rap",23.2,91,5],
+[682615180,"am echad","omaney israel","Pop",31.6,9,5],
+[682616006,"lo levad","jane bordeaux","Pop",33.5,20,5],
+[682622235,"mitaryah fi ghiyabih","faraj nagm","Hip-Hop/Rap",24.3,11,2],
+[682750294,"חרבו דרבו","ness & stilla","Hip-Hop/Rap",10.6,76,5],
+[682888347,"angel numbers / ten toes","chris brown","R&B/Soul",22.2,104,5],
+[682968353,"ha-shir shel noam 2","maor ashkenazi & noam cohen","Pop",30.6,11,5],
+[683099395,"montagem mysterious game","lxngvx","Alternative/Folk",41.6,10,3],
+[683192874,"yahad tamid","static & agam buhbut","Pop",16.6,19,5],
+[683344197,"latset mi-dikaon (live)","yigal ushery","Pop",21.9,8,5],
+[683714584,"leyla","hamit karadeniz","Alternative/Folk",12.6,19,5],
+[683841661,"mi meshuga","duda gang","Pop",23.7,39,5],
+[683875132,"atem ba-lev","stephane","Pop",38.6,7,5],
+[683880229,"ha-asir","ben zur & jah-b","Hip-Hop/Rap",42.3,3,1],
+[683929027,"ain li makom acher","itay levy","Israeli",10.7,87,5],
+[684465444,"ha-simcha / medabrim al shalom","omer adam & shrekdimc","Pop",19.2,16,5],
+[684515535,"yeladim shel ha-hayim","dudu tassa","Pop",34,11,5],
+[684533817,"ba-makom she-ani gar","jimbo j, orit tsuma & avraham lagasa","Hip-Hop/Rap",16.9,71,5],
+[684534260,"mitga'age'a","jimbo j","Hip-Hop/Rap",35.5,20,5],
+[684704424,"never lose me","flo milli","Hip-Hop/Rap",47.7,3,1],
+[684759775,"shuv lo yacholti lishon","alon eder","Pop",44.3,3,1],
+[684806304,"disco","dan korshunov","Pop",37.7,3,1],
+[684831912,"georgian disco","rolex rolex","Pop",38,3,1],
+[685179114,"ad she-tahazor, ad she-tashuvi","lola marsh","Pop",17.8,32,5],
+[685306809,"atalef iver (ha-kokhav ha-ba)","ha-kokhav ha-ba & shauli gringlick","Pop",33.4,7,5],
+[685438750,"there will come a day","celeste","Pop",46.8,10,3],
+[685526995,"yahayfim","mem","Pop",41.6,9,5],
+[685527865,"ha-yalda ha-khi yafa be-gan eden","dan biton","Pop",28.3,8,5],
+[685528202,"yesh kan yoter mi-ze [live]","zehu ze & hanan ben ari","Pop",37.8,5,5],
+[685669839,"just another rainbow","liam gallagher & john squire","Alternative/Folk",42.5,4,1],
+[685854022,"ve-eich she-lo","omer adam","Pop",17.7,60,5],
+[686055821,"everybody","kanye west & ty dolla $ign","Hip-Hop/Rap",40.7,6,4],
+[686148436,"be-sof od nipagas","eliad","Pop",45,3,2],
+[686148866,"ze beseder","benaia barabi & ha-haverim min ha-nova","Pop",21.8,45,5],
+[686270199,"tak dvay","ron troyan","Pop",40,6,5],
+[686476364,"gan eden shel meshuga'im","shasson ifrem shaoulov","Israeli",36.8,57,5],
+[686476569,"kavim li-dmuto","osher cohen","Pop",42.8,10,5],
+[686557601,"cry","mergui","Pop",39.3,6,3],
+[686579750,"kahi oti letayel [live]","zehu ze & dudu tassa","Pop",42,7,1],
+[686595065,"beautiful things","benson boone","Pop",9.7,39,5],
+[686823801,"ani rotse et ha-hayim sheli hazara","yoshi","Pop",31.2,26,5],
+[687030370,"ma e'ese","eviatar banai","Rock",42.5,7,3],
+[687030374,"dimyon hofshi","eviatar banai","Rock",26.8,22,5],
+[687146474,"ad she-yipol ha-yare'ah","shira margalit","Pop",32.9,11,5],
+[687201623,"bring you home","tamir","Pop",32.6,4,2],
+[687276403,"ha-etz yihye","monica sex & alma gov","Rock",45.9,8,3],
+[687291766,"praise jah in the moonlight","uzii bigtalk","Alternative/Folk",6.8,35,5],
+[687370391,"lej","don xhoni & dhurata dora","Pop",43.4,7,3],
+[687411758,"galbi","ali s","Pop",16.7,33,5],
+[687515318,"daylight (mizrad bein-le'umi 2023)","amir dadon","Pop",30.4,17,5],
+[687543379,"ya yo me entere (tech house remix)","nacho radesca","Electronic/Dance",25.4,6,5],
+[687657607,"sibeq min karate","amin khattab","World/Arabic",29.5,4,1],
+[687742934,"the sound of silence (cyril remix)","disturbed","Electronic/Dance",33.9,34,5],
+[687750089,"tov li she-at kan","avraham tal","Pop",27.2,22,5],
+[687784783,"ochila lakel (radio edit)","david hopperman & melvyn","Electronic/Dance",42.2,3,2],
+[687888766,"haverim","yigal ushery","Pop",14.7,28,5],
+[687989410,"lehahazik hazak","akiva","Rock",21.2,26,5],
+[688114425,"redrum","21 savage","Hip-Hop/Rap",24.3,39,5],
+[688164905,"yes, and?","ariana grande","Pop",44.2,7,5],
+[688247678,"haygili mowga","tamer ashour","Other",37.5,8,1],
+[688264156,"nahar ha-dma'ot","shlomo artzi & peer tasi","Pop",21.6,37,5],
+[688567999,"angel numbers (amapiano remix)","chris brown","Other",42.5,9,2],
+[688583875,"think u the shit (fart)","ice spice","Hip-Hop/Rap",40.6,7,4],
+[688598201,"ata kulan","yogev glusman","Rock",30.2,25,5],
+[688612043,"ototo","ben el tavori","Pop",24.2,22,5],
+[688702550,"woseltelha","haifa wehbe","Pop",28.4,12,3],
+[688971415,"patadas de ahogado (hugel remix)","latin mafia & humbe","Electronic/Dance",41.7,6,2],
+[688995404,"lishtof et ha-etzev","omer adam","Pop",38.1,5,4],
+[689090268,"ha-dam sheli","shasson ifrem shaoulov & odeya","Pop",37.2,13,5],
+[689113764,"turn the lights back on","billy joel","Pop",23.2,13,5],
+[689152683,"mahshavot tovot","shila eliya","Alternative/Folk",6.3,38,5],
+[689204602,"dam sheli","eden ben zaken","Pop",27.8,24,5],
+[689478824,"ain lanu mila","nehoray turjeman","Pop",38.5,4,1],
+[689586963,"enti yalli","laith abweh","World/Arabic",29.2,5,1],
+[689595484,"selfish","justin timberlake","Pop",40.7,10,3],
+[689633426,"queen x hi gyal","uri saban","Israeli",42.1,7,5],
+[689761496,"aba","ben zur","Pop",38.2,17,5],
+[689769317,"be-yom she-aharav","guy zu-aretz","Pop",39.1,7,4],
+[689774297,"ze aleynu","subliminal, the shadow & raviv kaner","Hip-Hop/Rap",33.2,9,5],
+[689888782,"halamti al america","idiot!","Alternative/Folk",21.5,28,5],
+[689892499,"training season","dua lipa","Pop",43.9,4,3],
+[690168564,"tsoheket u-voha","eden hason","Israeli",23.2,22,5],
+[690267366,"im ata sheli","odeya","Pop",35.3,2,4],
+[690409208,"nefilati","rosh lavan","Rock",36.8,10,5],
+[690440537,"sab3 el3ajayeb","roro harb","Pop",17.7,19,5],
+[690644766,"law qadami banat hawa","trend media","World/Arabic",48.7,3,2],
+[690827051,"yom kippur","jasmin moallem","Pop",20.9,13,5],
+[690839165,"giborim al","hatikva 6","Pop",21.2,4,5],
+[690855784,"menagen ve-shar","osher cohen","Pop",7.5,17,5],
+[690855829,"eifo ata","osher cohen","Pop",28.8,12,5],
+[690966677,"chikita","noya chekoral","Electronic/Dance",31,10,5],
+[691261602,"ahava rak shel layla","hagar yefet","Israeli",40.4,4,3],
+[691441117,"sabran","al shami","Pop",22.1,13,5],
+[691577092,"texas hold 'em","beyonce","Alternative/Folk",15.6,10,5],
+[691778297,"ana elkhela","mohanad zaiter","Pop",17,5,2]
+];
+
+// All edges involving HD (682750294) – [source, target, weight]
+const LINKS_RAW = [
+[225178,HD_ID,3],[228965,HD_ID,33],[232141,HD_ID,10],[238534,HD_ID,11],[240495,HD_ID,13],
+[272398,HD_ID,31],[294633,HD_ID,25],[459379,HD_ID,17],[5164711,HD_ID,8],[5165362,HD_ID,20],
+[5215989,HD_ID,30],[5443315,HD_ID,6],[5653525,HD_ID,11],[5878414,HD_ID,46],[10002705,HD_ID,10],
+[10092263,HD_ID,18],[10314013,HD_ID,4],[10314014,HD_ID,8],[10485293,HD_ID,22],[10593988,HD_ID,6],
+[11127316,HD_ID,38],[11177141,HD_ID,20],[20004342,HD_ID,4],[20029574,HD_ID,75],[20056730,HD_ID,4],
+[20116104,HD_ID,348],[40008671,HD_ID,13],[40087819,HD_ID,135],[40111843,HD_ID,10],[40628368,HD_ID,73],
+[40638280,HD_ID,30],[40649745,HD_ID,64],[42545851,HD_ID,15],[44328874,HD_ID,3],[44388860,HD_ID,125],
+[44450879,HD_ID,6],[44558453,HD_ID,13],[45180944,HD_ID,60],[45389104,HD_ID,215],[45530335,HD_ID,73],
+[46076121,HD_ID,20],[47677477,HD_ID,58],[48312027,HD_ID,4],[48796740,HD_ID,8],[49493009,HD_ID,7],
+[49978537,HD_ID,196],[51159858,HD_ID,45],[52151180,HD_ID,100],[52384642,HD_ID,27],[52689669,HD_ID,3],
+[52743839,HD_ID,14],[52930860,HD_ID,54],[53271726,HD_ID,6],[53561583,HD_ID,59],[53962771,HD_ID,3],
+[54004343,HD_ID,36],[54362551,HD_ID,7],[55977094,HD_ID,12],[58235903,HD_ID,12],[59488812,HD_ID,5],
+[61079729,HD_ID,9],[61999227,HD_ID,101],[64712815,HD_ID,52],[66002073,HD_ID,4],[66338287,HD_ID,4],
+[66387760,HD_ID,33],[68006578,HD_ID,40],[70679146,HD_ID,238],[71518388,HD_ID,31],[78665816,HD_ID,17],
+[85966369,HD_ID,13],[86465795,HD_ID,3],[90634834,HD_ID,307],[90942201,HD_ID,3],[93538159,HD_ID,3],
+[101211544,HD_ID,19],[103443495,HD_ID,9],[103621403,HD_ID,13],[111169056,HD_ID,27],[146039522,HD_ID,4],
+[149961136,HD_ID,6],[162553850,HD_ID,3],[200527842,HD_ID,5],[224806500,HD_ID,96],[235243031,HD_ID,4],
+[262737553,HD_ID,12],[284742092,HD_ID,10],[287486335,HD_ID,37],[298202984,HD_ID,48],[298370663,HD_ID,27],
+[307795563,HD_ID,29],[308021058,HD_ID,11],[309638034,HD_ID,131],[310300106,HD_ID,3],[312452486,HD_ID,148],
+[313490394,HD_ID,27],[314491967,HD_ID,4],[317291164,HD_ID,38],[320720176,HD_ID,70],[324950052,HD_ID,7],
+[330689580,HD_ID,5],[331913879,HD_ID,14],[337662833,HD_ID,30],[342514741,HD_ID,19],[344094914,HD_ID,85],
+[344619652,HD_ID,4],[347294701,HD_ID,16],[360718083,HD_ID,4],[379995993,HD_ID,24],[380156079,HD_ID,6],
+[382434403,HD_ID,3],[384617270,HD_ID,27],[414985750,HD_ID,23],[422160063,HD_ID,25],[427101360,HD_ID,10],
+[428215731,HD_ID,11],[430774708,HD_ID,28],[433360089,HD_ID,10],[440807213,HD_ID,7],[462276207,HD_ID,3],
+[462648965,HD_ID,21],[504494806,HD_ID,30],[505112508,HD_ID,31],[506362559,HD_ID,27],[506930583,HD_ID,7],
+[516489317,HD_ID,94],[531676660,HD_ID,93],[533563791,HD_ID,205],[534094098,HD_ID,12],[534468419,HD_ID,15],
+[535420454,HD_ID,12],[537535696,HD_ID,316],[544842905,HD_ID,160],[564889079,HD_ID,39],[565367971,HD_ID,21],
+[567570330,HD_ID,13],[569970796,HD_ID,28],[572837088,HD_ID,16],[579155409,HD_ID,23],[579371690,HD_ID,13],
+[581828191,HD_ID,111],[581891303,HD_ID,63],[583543958,HD_ID,147],[583936148,HD_ID,7],[585741070,HD_ID,6],
+[589528127,HD_ID,46],[594265720,HD_ID,64],[603471061,HD_ID,45],[603839352,HD_ID,38],[604808416,HD_ID,127],
+[607917333,HD_ID,58],[609576749,HD_ID,17],[610316556,HD_ID,71],[614060912,HD_ID,24],[614341353,HD_ID,19],
+[616505471,HD_ID,24],[619492066,HD_ID,5],[621732665,HD_ID,40],[622275048,HD_ID,7],[631531842,HD_ID,10],
+[633367735,HD_ID,353],[633815114,HD_ID,32],[635057604,HD_ID,41],[635972154,HD_ID,8],[636179679,HD_ID,7],
+[646260487,HD_ID,14],[648859694,HD_ID,48],[649911199,HD_ID,16],[651269055,HD_ID,364],[651322443,HD_ID,334],
+[652452878,HD_ID,37],[653088510,HD_ID,27],[654386151,HD_ID,18],[659236090,HD_ID,12],[663870182,HD_ID,97],
+[665258594,HD_ID,66],[666513521,HD_ID,72],[666629383,HD_ID,159],[666647256,HD_ID,11],[666710033,HD_ID,128],
+[666933077,HD_ID,11],[667016587,HD_ID,292],[667312288,HD_ID,26],[667426645,HD_ID,31],[668023156,HD_ID,169],
+[668084599,HD_ID,250],[668440346,HD_ID,41],[668834911,HD_ID,20],[668966638,HD_ID,5],[669055207,HD_ID,75],
+[670152796,HD_ID,16],[670453090,HD_ID,71],[671120123,HD_ID,16],[671288749,HD_ID,10],[671876208,HD_ID,19],
+[672088996,HD_ID,266],[672741689,HD_ID,4],[673104339,HD_ID,292],[673317418,HD_ID,33],[673484151,HD_ID,24],
+[673557639,HD_ID,54],[673811918,HD_ID,350],[674705321,HD_ID,30],[674747102,HD_ID,15],[674934145,HD_ID,25],
+[675031499,HD_ID,324],[675132421,HD_ID,268],[675387106,HD_ID,14],[676217862,HD_ID,32],[676472713,HD_ID,67],
+[676547729,HD_ID,151],[676684452,HD_ID,308],[676778971,HD_ID,5],[677066570,HD_ID,14],[677446756,HD_ID,11],
+[677817563,HD_ID,9],[677829655,HD_ID,30],[678039577,HD_ID,115],[679163173,HD_ID,24],[679241565,HD_ID,8],
+[679415347,HD_ID,322],[679415369,HD_ID,86],[679706249,HD_ID,8],[679828624,HD_ID,21],[679889316,HD_ID,30],
+[680003811,HD_ID,47],[680060604,HD_ID,102],[680550395,HD_ID,20],[680643280,HD_ID,34],[680747583,HD_ID,209],
+[680820391,HD_ID,5],[680956473,HD_ID,5],[681181441,HD_ID,188],[681349253,HD_ID,25],[681512852,HD_ID,252],
+[681557383,HD_ID,40],[681706557,HD_ID,58],[681941335,HD_ID,76],[681957864,HD_ID,219],[681990115,HD_ID,304],
+[682422829,HD_ID,53],[682603992,HD_ID,282],[682615180,HD_ID,30],[682616006,HD_ID,80],[682622235,HD_ID,12],
+// HD as source
+[HD_ID,682888347,330],[HD_ID,682968353,32],[HD_ID,683099395,3],[HD_ID,683192874,85],
+[HD_ID,683344197,35],[HD_ID,683714584,74],[HD_ID,683841661,171],[HD_ID,683875132,28],
+[HD_ID,683880229,3],[HD_ID,683929027,266],[HD_ID,684465444,73],[HD_ID,684515535,45],
+[HD_ID,684533817,196],[HD_ID,684534260,62],[HD_ID,684704424,3],[HD_ID,684759775,3],
+[HD_ID,684806304,3],[HD_ID,684831912,3],[HD_ID,685179114,151],[HD_ID,685306809,28],
+[HD_ID,685438750,12],[HD_ID,685526995,17],[HD_ID,685527865,33],[HD_ID,685528202,19],
+[HD_ID,685854022,220],[HD_ID,686055821,14],[HD_ID,686148436,4],[HD_ID,686148866,158],
+[HD_ID,686270199,20],[HD_ID,686476364,126],[HD_ID,686476569,22],[HD_ID,686579750,7],
+[HD_ID,686595065,19],[HD_ID,686823801,99],[HD_ID,687030370,12],[HD_ID,687030374,78],
+[HD_ID,687146474,41],[HD_ID,687201623,8],[HD_ID,687276403,11],[HD_ID,687291766,15],
+[HD_ID,687370391,11],[HD_ID,687411758,115],[HD_ID,687515318,68],[HD_ID,687543379,25],
+[HD_ID,687742934,50],[HD_ID,687750089,48],[HD_ID,687888766,22],[HD_ID,688114425,15],
+[HD_ID,688164905,4],[HD_ID,688264156,47],[HD_ID,688583875,16],[HD_ID,688598201,10],
+[HD_ID,688702550,16],[HD_ID,688971415,6],[HD_ID,688995404,9],[HD_ID,689090268,4],
+[HD_ID,689152683,39]
+];
+
+// ── SETUP ─────────────────────────────────────────────────────────────────────
+const W = window.innerWidth, H = window.innerHeight;
+const svg = d3.select('#canvas').attr('viewBox', `0 0 ${W} ${H}`);
+const g = svg.append('g');
+
+svg.call(d3.zoom().scaleExtent([0.05, 8]).on('zoom', e => g.attr('transform', e.transform)));
+
+const nodeById = new Map();
+const nodes = NODES_RAW.map(([id, label, artist, genre, avg_rank, days, cities]) => {
+  const n = { id, label, artist, genre, avg_rank, days, cities, isHD: id === HD_ID };
+  nodeById.set(id, n);
+  return n;
+});
+
+const allLinks = LINKS_RAW.filter(([,, w]) => w > 0)
+  .map(([s, t, w]) => ({ source: s, target: t, weight: w }));
+
+const hdWeightMap = new Map();
+allLinks.forEach(l => {
+  const other = l.source === HD_ID ? l.target : (l.target === HD_ID ? l.source : null);
+  if (other !== null) hdWeightMap.set(other, l.weight);
+});
+const hdNeighborIds = new Set(hdWeightMap.keys());
+hdNeighborIds.add(HD_ID);
+
+const maxDays = d3.max(nodes, n => n.days);
+const rScale = d3.scaleSqrt().domain([0, maxDays]).range([2.5, 15]);
+
+const wExtent = d3.extent(allLinks, l => l.weight);
+const strokeScale = d3.scaleLog()
+  .domain([Math.max(1, wExtent[0]), wExtent[1]])
+  .range([0.4, 6]);
+
+// ── LEGEND ────────────────────────────────────────────────────────────────────
+const hiddenGenres = new Set();
+const legendDiv = document.getElementById('legend');
+Object.entries(GENRE_COLORS).forEach(([genre, color]) => {
+  const row = document.createElement('div');
+  row.className = 'leg-row'; row.dataset.genre = genre;
+  row.innerHTML = `<div class="leg-dot" style="background:${color}"></div><div class="leg-label">${genre}</div>`;
+  row.addEventListener('click', () => {
+    if (hiddenGenres.has(genre)) { hiddenGenres.delete(genre); row.classList.remove('hidden'); }
+    else { hiddenGenres.add(genre); row.classList.add('hidden'); }
+    applyVisibility();
+  });
+  legendDiv.appendChild(row);
+});
+
+// ── SIMULATION ────────────────────────────────────────────────────────────────
+let showAll = true, linkSel, nodeSel, simulation;
+
+function getActiveNodes() {
+  return showAll ? nodes : nodes.filter(n => hdNeighborIds.has(n.id));
+}
+function getActiveLinks(activeNodeIds) {
+  return allLinks.filter(l => activeNodeIds.has(l.source) && activeNodeIds.has(l.target));
+}
+
+function buildSim() {
+  const activeNodes = getActiveNodes();
+  const activeIds = new Set(activeNodes.map(n => n.id));
+  const activeLinks = getActiveLinks(activeIds);
+
+  const simNodes = activeNodes.map(n => {
+    const sn = Object.assign({}, n);
+    if (n.isHD) { sn.fx = W / 2; sn.fy = H / 2; }
+    return sn;
+  });
+  const nodeMap = new Map(simNodes.map(n => [n.id, n]));
+  const simLinks = activeLinks
+    .map(l => ({ source: nodeMap.get(l.source), target: nodeMap.get(l.target), weight: l.weight }))
+    .filter(l => l.source && l.target);
+
+  g.selectAll('*').remove();
+
+  linkSel = g.append('g').selectAll('line').data(simLinks).join('line')
+    .attr('stroke', '#475569').attr('stroke-opacity', 0.4)
+    .attr('stroke-width', d => strokeScale(d.weight));
+
+  const nodeG = g.append('g').selectAll('g').data(simNodes).join('g')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!d.isHD && !e.active) simulation.alphaTarget(0.2).restart(); if (!d.isHD) { d.fx = d.x; d.fy = d.y; } })
+      .on('drag', (e, d) => { if (!d.isHD) { d.fx = e.x; d.fy = e.y; } })
+      .on('end', (e, d) => { if (!d.isHD) { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; } })
+    );
+
+  nodeG.append('circle')
+    .attr('r', d => d.isHD ? 18 : rScale(d.days))
+    .attr('fill', d => GENRE_COLORS[d.genre] || '#94a3b8')
+    .attr('stroke', d => d.isHD ? '#f59e0b' : 'rgba(0,0,0,0.35)')
+    .attr('stroke-width', d => d.isHD ? 3 : 1)
+    .style('filter', d => d.isHD ? 'drop-shadow(0 0 10px rgba(245,158,11,0.9))' : null);
+
+  nodeG.filter(d => d.isHD).append('text')
+    .text('Harbu Darbu')
+    .attr('text-anchor', 'middle').attr('dy', '-22')
+    .attr('fill', '#f59e0b').attr('font-weight', '700').attr('font-size', '13px')
+    .style('pointer-events', 'none');
+
+  const tooltip = document.getElementById('tooltip');
+  nodeG.on('mouseover', (e, d) => {
+    const w = hdWeightMap.get(d.id);
+    tooltip.innerHTML = `<div class="t-title">${d.label}</div>
+      <div class="t-row">Artist: <span>${d.artist}</span></div>
+      <div class="t-row">Genre: <span>${d.genre}</span></div>
+      <div class="t-row">Avg rank: <span>#${d.avg_rank}</span></div>
+      <div class="t-row">Days charting: <span>${d.days}</span></div>
+      ${w ? `<div class="t-row">Co-chart weight with Harbu Darbu: <span class="t-weight">${w}</span></div>` : ''}`;
+    tooltip.style.display = 'block';
+  }).on('mousemove', e => {
+    tooltip.style.left = (e.pageX + 14) + 'px';
+    tooltip.style.top = (e.pageY - 10) + 'px';
+  }).on('mouseout', () => tooltip.style.display = 'none');
+
+  nodeSel = nodeG;
+
+  simulation = d3.forceSimulation(simNodes)
+    .force('link', d3.forceLink(simLinks).id(d => d.id)
+      .distance(d => {
+        if (d.weight >= 250) return 70;
+        if (d.weight >= 150) return 100;
+        if (d.weight >= 80) return 140;
+        if (d.weight >= 30) return 180;
+        return 260;
+      })
+      .strength(d => Math.min(0.9, d.weight / 150))
+    )
+    .force('charge', d3.forceManyBody().strength(-50).distanceMax(250))
+    .force('collision', d3.forceCollide().radius(d => rScale(d.days) + 2))
+    .force('center', d3.forceCenter(W / 2, H / 2).strength(0.03))
+    .alphaDecay(0.035)
+    .on('tick', ticked)
+    .on('end', () => simNodes.forEach(n => { if (!n.isHD) { n.fx = n.x; n.fy = n.y; } }));
+
+  applyVisibility();
+}
+
+function ticked() {
+  linkSel
+    .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  nodeSel.attr('transform', d => `translate(${d.x ?? 0},${d.y ?? 0})`);
+}
+
+function applyVisibility() {
+  if (!nodeSel) return;
+  nodeSel.style('opacity', d => hiddenGenres.has(d.genre) ? 0.05 : 1);
+}
+
+buildSim();
+
+// ── CONTROLS ──────────────────────────────────────────────────────────────────
+document.getElementById('btn-all').addEventListener('click', () => {
+  showAll = true;
+  document.getElementById('btn-all').classList.add('active');
+  document.getElementById('btn-ego').classList.remove('active');
+  buildSim();
+});
+document.getElementById('btn-ego').addEventListener('click', () => {
+  showAll = false;
+  document.getElementById('btn-ego').classList.add('active');
+  document.getElementById('btn-all').classList.remove('active');
+  buildSim();
+});
+document.getElementById('btn-reset').addEventListener('click', () => {
+  svg.transition().duration(600).call(d3.zoom().transform, d3.zoomIdentity);
+});
+
+// ── SEARCH ────────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  if (!q) { searchResults.style.display = 'none'; return; }
+  const hits = nodes.filter(n =>
+    n.label.toLowerCase().includes(q) || n.artist.toLowerCase().includes(q)
+  ).slice(0, 8);
+  if (!hits.length) { searchResults.style.display = 'none'; return; }
+  searchResults.innerHTML = hits.map(n =>
+    `<div class="s-row" data-id="${n.id}">${n.label} <small style="color:#64748b">— ${n.artist}</small></div>`
+  ).join('');
+  searchResults.style.display = 'block';
+  searchResults.querySelectorAll('.s-row').forEach(row => {
+    row.addEventListener('click', () => {
+      highlightNode(parseInt(row.dataset.id));
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    });
+  });
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('#search-wrap')) searchResults.style.display = 'none';
+});
+
+function highlightNode(id) {
+  if (!nodeSel) return;
+  nodeSel.selectAll('circle')
+    .attr('stroke', d => d.id === id ? '#ffffff' : d.isHD ? '#f59e0b' : 'rgba(0,0,0,0.35)')
+    .attr('stroke-width', d => d.id === id ? 4 : d.isHD ? 3 : 1);
+}
+</script>
+</body>
+</html>
